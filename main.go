@@ -709,7 +709,8 @@ func main() {
 	if len(args) == 0 {
 		result := runApp(modePicker)
 		if result.selected != "" {
-			fmt.Println(result.selected)
+			fmt.Fprint(os.Stderr, "\033[H\033[2J")
+			os.WriteFile("/tmp/gt_lastdir", []byte(result.selected), 0644)
 			if wantClaude {
 				launchClaude(result.selected)
 			}
@@ -736,7 +737,14 @@ func main() {
 			saveBookmarks(dirs)
 			fmt.Println("added:", abs)
 		} else {
-			runApp(modeBrowser)
+			result := runApp(modeBrowser)
+			if result.selected != "" {
+				fmt.Fprint(os.Stderr, "\033[H\033[2J")
+				os.WriteFile("/tmp/gt_lastdir", []byte(result.selected), 0644)
+				if wantClaude {
+					launchClaude(result.selected)
+				}
+			}
 		}
 
 	case "list":

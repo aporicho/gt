@@ -15,26 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/aporicho/gt/main/install.sh | bash
 
 支持平台：macOS (Apple Silicon / Intel)、Linux (x64 / ARM64)，无需 Go 环境。
 
-安装脚本会自动添加以下 shell 函数到 `~/.zshrc` 或 `~/.bashrc`：
-
-```sh
-gt() {
-    if [ $# -eq 0 ]; then
-        local dir=$(command gt)
-        [ -n "$dir" ] && cd "$dir"
-    else
-        command gt "$@"
-    fi
-}
-gtc() {
-    if [ $# -eq 0 ]; then
-        local dir=$(command gtc)
-        [ -n "$dir" ] && cd "$dir"
-    else
-        command gtc "$@"
-    fi
-}
-```
+安装脚本会自动配置 shell 函数到 `~/.zshrc` 或 `~/.bashrc`，重复安装会自动替换旧配置。首次安装后请**开启新终端**生效。
 
 使用 `gtc` 需要已安装 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)。
 
@@ -46,9 +27,10 @@ gtc              选择书签目录，cd 后自动启动 claude
 gt add           交互式浏览并添加目录到书签
 gt add <路径>    添加指定目录到书签
 gt list          列出所有书签
+gt --version     显示版本号
 ```
 
-## 操作
+## 快捷键
 
 | 按键 | 功能 |
 |------|------|
@@ -58,7 +40,7 @@ gt list          列出所有书签
 | - | 删除当前书签（需再按一次确认） |
 | + | 添加当前目录到书签 |
 | t | 切换主题 |
-| q / Esc / Ctrl+C | ��出 |
+| q / Esc / Ctrl+C | 退出 |
 
 ## 书签存储
 

@@ -48,7 +48,7 @@ ln -sf "${BIN_NAME}" "${INSTALL_DIR}/gtc"
 
 echo "已安装到 ${INSTALL_DIR}/${BIN_NAME} (gtc -> gt symlink)"
 
-# ── Detect shell config file ─────────────────────────────────────────────────
+# ── 配置 shell 函数 ──────────────────────────────────────────────────────────
 
 SHELL_NAME=$(basename "${SHELL:-/bin/sh}")
 case "$SHELL_NAME" in
@@ -60,61 +60,34 @@ esac
 if [ -z "$RC_FILE" ]; then
   echo ""
   echo "未能识别 shell ($SHELL_NAME)，请手动配置："
+  echo '  # >>> gt >>>'
   echo '  export PATH="$HOME/.local/bin:$PATH"'
-  echo '  gt()  { if [ $# -eq 0 ]; then local dir=$(command gt);  [ -n "$dir" ] && cd "$dir"; else command gt  "$@"; fi; }'
-  echo '  gtc() { if [ $# -eq 0 ]; then local dir=$(command gtc); [ -n "$dir" ] && cd "$dir"; else command gtc "$@"; fi; }'
+  echo '  __gt_cd() { local tmp="/tmp/gt_lastdir"; [ -f "$tmp" ] && cd "$(cat "$tmp")" && rm -f "$tmp"; }'
+  echo '  gt()  { if [ $# -eq 0 ]; then command gt  && __gt_cd; else command gt  "$@"; fi; }'
+  echo '  gtc() { if [ $# -eq 0 ]; then command gtc && __gt_cd; else command gtc "$@"; fi; }'
+  echo '  # <<< gt <<<'
   exit 0
 fi
 
-CHANGED=false
+# 删除旧配置
+sed -i.bak '/# >>> gt >>>/,/# <<< gt <<</d' "$RC_FILE" && rm -f "${RC_FILE}.bak"
 
-# ── Add PATH if needed ───────────────────────────────────────────────────────
-
-case ":${PATH}:" in
-  *":${INSTALL_DIR}:"*) ;;
-  *)
-    echo '' >> "$RC_FILE"
-    echo '# gt' >> "$RC_FILE"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC_FILE"
-    CHANGED=true
-    echo "已添加 PATH 到 ${RC_FILE}"
-    ;;
-esac
-
-# ── Add shell wrapper functions ──────────────────────────────────────────────
-
-if grep -q 'command gt\b' "$RC_FILE" 2>/dev/null; then
-  echo "shell 函数已存在，跳过"
-else
-  # if PATH was already there, we still need the comment header
-  if [ "$CHANGED" = false ]; then
-    echo '' >> "$RC_FILE"
-    echo '# gt' >> "$RC_FILE"
-  fi
-  cat >> "$RC_FILE" << 'FUNC'
+# 写入新配置
+cat >> "$RC_FILE" << 'BLOCK'
+# >>> gt >>>
+export PATH="$HOME/.local/bin:$PATH"
+__gt_cd() {
+    local tmp="/tmp/gt_lastdir"
+    [ -f "$tmp" ] && cd "$(cat "$tmp")" && rm -f "$tmp"
+}
 gt() {
-    if [ $# -eq 0 ]; then
-        local dir=$(command gt)
-        [ -n "$dir" ] && cd "$dir"
-    else
-        command gt "$@"
-    fi
+    if [ $# -eq 0 ]; then command gt && __gt_cd; else command gt "$@"; fi
 }
 gtc() {
-    if [ $# -eq 0 ]; then
-        local dir=$(command gtc)
-        [ -n "$dir" ] && cd "$dir"
-    else
-        command gtc "$@"
-    fi
+    if [ $# -eq 0 ]; then command gtc && __gt_cd; else command gtc "$@"; fi
 }
-FUNC
-  CHANGED=true
-  echo "已添加 shell 函数到 ${RC_FILE}"
-fi
+# <<< gt <<<
+BLOCK
 
-if [ "$CHANGED" = true ]; then
-  echo ""
-  echo "请运行以下命令使配置生效："
-  echo "  source ${RC_FILE}"
-fi
+echo "已更新 shell 配置 → ${RC_FILE}"
+echo "运行 source ${RC_FILE} 生效"
