@@ -3,7 +3,7 @@ INSTALL_DIR := $(HOME)/.local/bin
 VERSION := $(shell cat VERSION)
 LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 
-.PHONY: build install fmt vet build-all
+.PHONY: build install fmt vet build-all clean
 
 build:
 	go build $(LDFLAGS) -o $(BIN) main.go
@@ -16,6 +16,9 @@ fmt:
 
 vet: fmt
 	go vet ./...
+
+clean:
+	rm -f $(BIN) dist/*
 
 build-all:
 	GOOS=linux  GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o dist/$(BIN)-linux-amd64 main.go
