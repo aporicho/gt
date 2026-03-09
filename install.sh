@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-REPO="aporicho/gtc"
-BIN_NAME="gtc"
+REPO="aporicho/gt"
+BIN_NAME="gt"
 INSTALL_DIR="${HOME}/.local/bin"
 
 # Detect OS
@@ -44,8 +44,9 @@ echo "正在安装 ${BIN_NAME} ${TAG} (${OS}/${ARCH})..."
 mkdir -p "$INSTALL_DIR"
 curl -fsSL "$URL" -o "${INSTALL_DIR}/${BIN_NAME}"
 chmod +x "${INSTALL_DIR}/${BIN_NAME}"
+ln -sf "${BIN_NAME}" "${INSTALL_DIR}/gtc"
 
-echo "已安装到 ${INSTALL_DIR}/${BIN_NAME}"
+echo "已安装到 ${INSTALL_DIR}/${BIN_NAME} (gtc -> gt symlink)"
 
 # ── Detect shell config file ─────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ if [ -z "$RC_FILE" ]; then
   echo ""
   echo "未能识别 shell ($SHELL_NAME)，请手动配置："
   echo '  export PATH="$HOME/.local/bin:$PATH"'
+  echo '  gt()  { if [ $# -eq 0 ]; then local dir=$(command gt);  [ -n "$dir" ] && cd "$dir"; else command gt  "$@"; fi; }'
   echo '  gtc() { if [ $# -eq 0 ]; then local dir=$(command gtc); [ -n "$dir" ] && cd "$dir"; else command gtc "$@"; fi; }'
   exit 0
 fi
@@ -72,24 +74,32 @@ case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
   *)
     echo '' >> "$RC_FILE"
-    echo '# gtc' >> "$RC_FILE"
+    echo '# gt' >> "$RC_FILE"
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC_FILE"
     CHANGED=true
     echo "已添加 PATH 到 ${RC_FILE}"
     ;;
 esac
 
-# ── Add shell wrapper function ────────────────────────────────────────────────
+# ── Add shell wrapper functions ──────────────────────────────────────────────
 
-if grep -q 'command gtc' "$RC_FILE" 2>/dev/null; then
+if grep -q 'command gt\b' "$RC_FILE" 2>/dev/null; then
   echo "shell 函数已存在，跳过"
 else
   # if PATH was already there, we still need the comment header
   if [ "$CHANGED" = false ]; then
     echo '' >> "$RC_FILE"
-    echo '# gtc' >> "$RC_FILE"
+    echo '# gt' >> "$RC_FILE"
   fi
   cat >> "$RC_FILE" << 'FUNC'
+gt() {
+    if [ $# -eq 0 ]; then
+        local dir=$(command gt)
+        [ -n "$dir" ] && cd "$dir"
+    else
+        command gt "$@"
+    fi
+}
 gtc() {
     if [ $# -eq 0 ]; then
         local dir=$(command gtc)

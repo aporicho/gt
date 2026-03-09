@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,7 +24,7 @@ var (
 
 func init() {
 	configDir, _ := os.UserConfigDir()
-	dir := filepath.Join(configDir, "gtc")
+	dir := filepath.Join(configDir, "gt")
 	os.MkdirAll(dir, 0755)
 	bookmarksFile = filepath.Join(dir, "bookmarks")
 	themeFile = filepath.Join(dir, "theme")
@@ -136,7 +138,7 @@ func saveThemeIdx(idx int) {
 
 var renderer = lipgloss.NewRenderer(os.Stderr)
 
-// ── style cache (Fix 3) ───────────────────────────────────────────────────────
+// ── style cache ────────────────────────────────────────────────────────────���─
 
 type themeStyles struct {
 	titleBar lipgloss.Style
@@ -167,152 +169,340 @@ func buildStyles(themeIdx int) themeStyles {
 	}
 }
 
-// ── model ─────────────────────────────────────────────────────────────────────
+// ── app mode ─────────────────────────────────────────────────────────────────
 
-type model struct {
+type appMode int
+
+const (
+	modePicker appMode = iota
+	modeBrowser
+)
+
+// ── unified app model ────────────────────────────────────────────────────────
+
+type appModel struct {
+	mode         appMode
+	width        int
+	height       int
+	themeIdx     int
+	cachedStyles themeStyles
+
+	// picker state
 	dirs          []string
-	cursor        int
-	selected      string
-	width         int
-	height        int        // Fix 4: terminal rows
-	themeIdx      int
-	cachedStyles  themeStyles // Fix 3: pre-built styles
-	listOffset    int        // Fix 4: first visible index
-	statusMsg     string     // Fix 5: feedback message
-	confirmDelete bool       // Fix 6: delete confirmation
+	pickerCursor  int
+	pickerOffset  int
+	selected      string // chosen bookmark path
+	statusMsg     string
+	confirmDelete bool
+
+	// browser state
+	currentDir    string
+	entries       []os.DirEntry
+	browsCursor   int
+	browsOffset   int
+	browsSelected map[string]bool // paths to add
+	browsRemoved  map[string]bool // existing bookmarks to remove
+	existingDirs  map[string]bool
+	browsStatus   string
+	confirmed     bool // browser confirmed with enter
 }
 
-func (m model) Init() tea.Cmd { return nil }
+func (m appModel) Init() tea.Cmd { return nil }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+func loadEntries(dir string) []os.DirEntry {
+	items, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var dirs []os.DirEntry
+	for _, e := range items {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			dirs = append(dirs, e)
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].Name() < dirs[j].Name()
+	})
+	return dirs
+}
+
+func (m appModel) switchToBrowser() appModel {
+	cwd, _ := os.Getwd()
+	existing := make(map[string]bool, len(m.dirs))
+	for _, d := range m.dirs {
+		existing[d] = true
+	}
+	m.mode = modeBrowser
+	m.currentDir = cwd
+	m.entries = loadEntries(cwd)
+	m.browsCursor = 0
+	m.browsOffset = 0
+	m.browsSelected = make(map[string]bool)
+	m.browsRemoved = make(map[string]bool)
+	m.existingDirs = existing
+	m.browsStatus = ""
+	m.confirmed = false
+	return m
+}
+
+func (m appModel) applyBrowserAndSwitchToPicker() appModel {
+	if m.confirmed {
+		dirs := loadBookmarks()
+		// remove
+		if len(m.browsRemoved) > 0 {
+			rmSet := make(map[string]bool, len(m.browsRemoved))
+			for p := range m.browsRemoved {
+				rmSet[p] = true
+			}
+			filtered := dirs[:0]
+			for _, d := range dirs {
+				if !rmSet[d] {
+					filtered = append(filtered, d)
+				}
+			}
+			dirs = filtered
+		}
+		// add
+		added := make([]string, 0, len(m.browsSelected))
+		for p := range m.browsSelected {
+			added = append(added, p)
+		}
+		sort.Strings(added)
+		dirs = append(dirs, added...)
+		saveBookmarks(dirs)
+	}
+	// switch back to picker
+	m.mode = modePicker
+	m.dirs = loadBookmarks()
+	m.pickerCursor = 0
+	m.pickerOffset = 0
+	m.statusMsg = ""
+	m.confirmDelete = false
+	return m
+}
+
+// ── update ───────────────────────────────────────────────────────────────────
+
+func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, nil
 	case tea.KeyMsg:
-		// clear transient state on every keypress (Fix 5, Fix 6)
-		m.statusMsg = ""
-		if msg.String() != "-" {
-			m.confirmDelete = false
+		if m.mode == modePicker {
+			return m.updatePicker(msg)
 		}
+		return m.updateBrowser(msg)
+	}
+	return m, nil
+}
 
-		switch msg.String() {
-		case "ctrl+c", "q", "esc":
-			return m, tea.Quit
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.dirs)-1 {
-				m.cursor++
-			}
-		case "enter":
-			if len(m.dirs) > 0 {
-				m.selected = m.dirs[m.cursor]
-			}
-			return m, tea.Quit
-		case "-":
-			if len(m.dirs) > 0 {
-				if !m.confirmDelete {
-					// Fix 6: first press — ask for confirmation
-					m.confirmDelete = true
-					m.statusMsg = "再按 - 确认删除"
-				} else {
-					// Fix 6: second press — actually delete
-					m.dirs = append(m.dirs[:m.cursor], m.dirs[m.cursor+1:]...)
-					saveBookmarks(m.dirs)
-					if m.cursor >= len(m.dirs) && m.cursor > 0 {
-						m.cursor--
-					}
-					m.confirmDelete = false
-				}
-			}
-		case "+":
-			if cwd, err := os.Getwd(); err == nil {
-				exists := false
-				for _, d := range m.dirs {
-					if d == cwd {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					m.dirs = append(m.dirs, cwd)
-					saveBookmarks(m.dirs)
-					m.cursor = len(m.dirs) - 1
-					m.statusMsg = "已添加" // Fix 5: success feedback
-				} else {
-					m.statusMsg = "已存在" // Fix 5: duplicate feedback
-				}
-			}
-		case "t":
-			m.themeIdx = (m.themeIdx + 1) % len(themes)
-			saveThemeIdx(m.themeIdx)
-			m.cachedStyles = buildStyles(m.themeIdx) // Fix 3: rebuild on theme change
-		}
+func (m appModel) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.statusMsg = ""
+	if msg.String() != "-" {
+		m.confirmDelete = false
 	}
 
-	// Fix 4: clamp scroll offset after every update
+	switch msg.String() {
+	case "ctrl+c", "q", "esc":
+		return m, tea.Quit
+	case "up", "k":
+		if m.pickerCursor > 0 {
+			m.pickerCursor--
+		}
+	case "down", "j":
+		if m.pickerCursor < len(m.dirs)-1 {
+			m.pickerCursor++
+		}
+	case "enter":
+		if len(m.dirs) == 0 {
+			m = m.switchToBrowser()
+			return m, nil
+		}
+		m.selected = m.dirs[m.pickerCursor]
+		return m, tea.Quit
+	case "-":
+		if len(m.dirs) > 0 {
+			if !m.confirmDelete {
+				m.confirmDelete = true
+				m.statusMsg = "再按 - 确认删除"
+			} else {
+				m.dirs = append(m.dirs[:m.pickerCursor], m.dirs[m.pickerCursor+1:]...)
+				saveBookmarks(m.dirs)
+				if m.pickerCursor >= len(m.dirs) && m.pickerCursor > 0 {
+					m.pickerCursor--
+				}
+				m.confirmDelete = false
+			}
+		}
+	case "+":
+		if cwd, err := os.Getwd(); err == nil {
+			exists := false
+			for _, d := range m.dirs {
+				if d == cwd {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				m.dirs = append(m.dirs, cwd)
+				saveBookmarks(m.dirs)
+				m.pickerCursor = len(m.dirs) - 1
+				m.statusMsg = "已添加"
+			} else {
+				m.statusMsg = "已存在"
+			}
+		}
+	case "t":
+		m.themeIdx = (m.themeIdx + 1) % len(themes)
+		saveThemeIdx(m.themeIdx)
+		m.cachedStyles = buildStyles(m.themeIdx)
+	}
+
+	// clamp scroll
+	visibleH := m.visibleRows(3)
+	if m.pickerCursor < m.pickerOffset {
+		m.pickerOffset = m.pickerCursor
+	}
+	if m.pickerCursor >= m.pickerOffset+visibleH {
+		m.pickerOffset = m.pickerCursor - visibleH + 1
+	}
+	return m, nil
+}
+
+func (m appModel) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.browsStatus = ""
+
+	switch msg.String() {
+	case "ctrl+c", "q", "esc":
+		m = m.applyBrowserAndSwitchToPicker()
+		m.confirmed = false // discard on esc
+		// reload without applying
+		m.dirs = loadBookmarks()
+		return m, nil
+	case "up", "k":
+		if m.browsCursor > 0 {
+			m.browsCursor--
+		}
+	case "down", "j":
+		if m.browsCursor < len(m.entries)-1 {
+			m.browsCursor++
+		}
+	case "right":
+		if len(m.entries) > 0 {
+			sub := filepath.Join(m.currentDir, m.entries[m.browsCursor].Name())
+			m.currentDir = sub
+			m.entries = loadEntries(sub)
+			m.browsCursor = 0
+			m.browsOffset = 0
+		}
+	case "left":
+		parent := filepath.Dir(m.currentDir)
+		if parent != m.currentDir {
+			oldBase := filepath.Base(m.currentDir)
+			m.currentDir = parent
+			m.entries = loadEntries(parent)
+			m.browsCursor = 0
+			for i, e := range m.entries {
+				if e.Name() == oldBase {
+					m.browsCursor = i
+					break
+				}
+			}
+			m.browsOffset = 0
+		}
+	case " ", "tab":
+		if len(m.entries) > 0 {
+			abs := filepath.Join(m.currentDir, m.entries[m.browsCursor].Name())
+			if m.existingDirs[abs] {
+				if m.browsRemoved[abs] {
+					delete(m.browsRemoved, abs)
+				} else {
+					m.browsRemoved[abs] = true
+				}
+			} else if m.browsSelected[abs] {
+				delete(m.browsSelected, abs)
+			} else {
+				m.browsSelected[abs] = true
+			}
+		}
+	case "enter":
+		if len(m.browsSelected) > 0 || len(m.browsRemoved) > 0 {
+			m.confirmed = true
+			m = m.applyBrowserAndSwitchToPicker()
+			return m, nil
+		}
+		m.browsStatus = "no changes"
+	case "t":
+		m.themeIdx = (m.themeIdx + 1) % len(themes)
+		saveThemeIdx(m.themeIdx)
+		m.cachedStyles = buildStyles(m.themeIdx)
+	}
+
+	// clamp scroll
+	visibleH := m.visibleRows(4)
+	if m.browsCursor < m.browsOffset {
+		m.browsOffset = m.browsCursor
+	}
+	if m.browsCursor >= m.browsOffset+visibleH {
+		m.browsOffset = m.browsCursor - visibleH + 1
+	}
+	return m, nil
+}
+
+func (m appModel) visibleRows(overhead int) int {
 	h := m.height
 	if h == 0 {
 		h = 24
 	}
-	visibleH := h - 3
-	if visibleH < 1 {
-		visibleH = 1
+	v := h - overhead
+	if v < 1 {
+		v = 1
 	}
-	if m.cursor < m.listOffset {
-		m.listOffset = m.cursor
-	}
-	if m.cursor >= m.listOffset+visibleH {
-		m.listOffset = m.cursor - visibleH + 1
-	}
-
-	return m, nil
+	return v
 }
 
-func (m model) View() string {
-	st := m.cachedStyles
+// ── view ─────────────────────────────────────────────────────────────────────
 
+func (m appModel) View() string {
+	if m.mode == modeBrowser {
+		return m.viewBrowser()
+	}
+	return m.viewPicker()
+}
+
+func (m appModel) viewPicker() string {
+	st := m.cachedStyles
 	w := m.width
 	if w == 0 {
 		w = 60
 	}
-	// panel has border (1 each side) → panel.Width(w-2) renders at w
 	panelW := w - 2
 
 	if len(m.dirs) == 0 {
-		content := st.hint.Italic(true).Render("no bookmarks") + "\n" +
-			st.hint.Render("use gtc add to add a directory")
+		content := st.hint.Italic(true).Render("还没有书签") + "\n" +
+			st.hint.Render("按 Enter 进入目录浏览器添加书签")
 		return st.titleBar.Width(w).Render("Bookmarks") + "\n" +
 			st.panel.Width(panelW).Render(content) + "\n"
 	}
 
-	// title
 	header := st.titleBar.Width(w).Render("Bookmarks")
 
-	// Fix 4: compute visible window
-	h := m.height
-	if h == 0 {
-		h = 24
-	}
-	visibleH := h - 3
-	if visibleH < 1 {
-		visibleH = 1
-	}
-	end := m.listOffset + visibleH
+	visibleH := m.visibleRows(3)
+	end := m.pickerOffset + visibleH
 	if end > len(m.dirs) {
 		end = len(m.dirs)
 	}
-	visible := m.dirs[m.listOffset:end]
+	visible := m.dirs[m.pickerOffset:end]
 
-	// list (only visible items)
 	var items string
 	for i, dir := range visible {
-		actualIdx := m.listOffset + i
+		actualIdx := m.pickerOffset + i
 		base := filepath.Base(dir)
-		if actualIdx == m.cursor {
+		if actualIdx == m.pickerCursor {
 			items += st.cursor.Render("❯ ") + st.selected.Render(base) + "\n"
 		} else {
 			items += st.normal.Render("  "+base) + "\n"
@@ -320,12 +510,11 @@ func (m model) View() string {
 	}
 	panel := st.panel.Width(panelW).Render(strings.TrimRight(items, "\n"))
 
-	// status bar — indented, shorter than panel
 	indent := 2
 	barW := w - indent*2
-	currentPath := m.dirs[m.cursor]
+	currentPath := m.dirs[m.pickerCursor]
 
-	counter := st.hint.Render(fmt.Sprintf("%d/%d", m.cursor+1, len(m.dirs)))
+	counter := st.hint.Render(fmt.Sprintf("%d/%d", m.pickerCursor+1, len(m.dirs)))
 	var hints string
 	if m.statusMsg != "" {
 		hints = st.hint.Render(m.statusMsg)
@@ -340,7 +529,6 @@ func (m model) View() string {
 		pathMaxW = 0
 	}
 
-	// Fix 1: rune-safe path truncation
 	runes := []rune(currentPath)
 	if len(runes) > pathMaxW {
 		runes = append([]rune("…"), runes[len(runes)-pathMaxW+1:]...)
@@ -360,22 +548,154 @@ func (m model) View() string {
 	return header + "\n" + panel + "\n" + statusBar + "\n"
 }
 
+func (m appModel) viewBrowser() string {
+	st := m.cachedStyles
+	w := m.width
+	if w == 0 {
+		w = 60
+	}
+	panelW := w - 2
+
+	header := st.titleBar.Width(w).Render("添加书签")
+	pathLine := st.hint.Render("  " + m.currentDir)
+
+	if len(m.entries) == 0 {
+		content := st.hint.Italic(true).Render("（空目录）")
+		return header + "\n" + pathLine + "\n" +
+			st.panel.Width(panelW).Render(content) + "\n"
+	}
+
+	visibleH := m.visibleRows(4)
+	end := m.browsOffset + visibleH
+	if end > len(m.entries) {
+		end = len(m.entries)
+	}
+	visible := m.entries[m.browsOffset:end]
+
+	var items string
+	for i, entry := range visible {
+		actualIdx := m.browsOffset + i
+		abs := filepath.Join(m.currentDir, entry.Name())
+		name := entry.Name() + "/"
+
+		isExisting := m.existingDirs[abs]
+		isSelected := m.browsSelected[abs]
+		isRemoved := m.browsRemoved[abs]
+
+		var dot string
+		if isExisting && isRemoved {
+			dot = "○ "
+		} else if isExisting {
+			dot = "● "
+		} else if isSelected {
+			dot = "● "
+		} else {
+			dot = "○ "
+		}
+
+		if actualIdx == m.browsCursor {
+			if isExisting && !isRemoved {
+				items += st.cursor.Render("❯ ") + st.selected.Render(dot) + st.hint.Render(name) + "\n"
+			} else if isExisting && isRemoved {
+				items += st.cursor.Render("❯ ") + st.normal.Render(dot) + st.hint.Render(name) + "\n"
+			} else if isSelected {
+				items += st.cursor.Render("❯ ") + st.selected.Render(dot+name) + "\n"
+			} else {
+				items += st.cursor.Render("❯ ") + st.normal.Render(dot+name) + "\n"
+			}
+		} else {
+			if isExisting && !isRemoved {
+				items += "  " + st.selected.Render(dot) + st.hint.Render(name) + "\n"
+			} else if isExisting && isRemoved {
+				items += "  " + st.normal.Render(dot) + st.hint.Render(name) + "\n"
+			} else if isSelected {
+				items += "  " + st.selected.Render(dot+name) + "\n"
+			} else {
+				items += st.normal.Render("  "+dot+name) + "\n"
+			}
+		}
+	}
+	panel := st.panel.Width(panelW).Render(strings.TrimRight(items, "\n"))
+
+	// status bar
+	indent := 2
+	barW := w - indent*2
+
+	addCount := len(m.browsSelected)
+	rmCount := len(m.browsRemoved)
+	var countParts []string
+	if addCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("+%d", addCount))
+	}
+	if rmCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("-%d", rmCount))
+	}
+	var counterStr string
+	if len(countParts) > 0 {
+		counterStr = strings.Join(countParts, " ")
+	}
+	counter := st.hint.Render(counterStr)
+
+	var hints string
+	if m.browsStatus != "" {
+		hints = st.hint.Render(m.browsStatus)
+	} else {
+		hints = st.hint.Render("space:select  enter:confirm  t:theme  esc:back")
+	}
+	gap := barW - lipgloss.Width(hints) - lipgloss.Width(counter)
+	if gap < 0 {
+		gap = 0
+	}
+	statusBar := strings.Repeat(" ", indent) +
+		counter +
+		strings.Repeat(" ", gap) +
+		hints
+
+	return header + "\n" + pathLine + "\n" + panel + "\n" + statusBar + "\n"
+}
+
 // ── runner ────────────────────────────────────────────────────────────────────
 
-func runPicker(dirs []string) string {
+func runApp(startMode appMode) appModel {
 	themeIdx := loadThemeIdx()
-	m := model{
-		dirs:         dirs,
+	m := appModel{
+		mode:         startMode,
 		themeIdx:     themeIdx,
-		cachedStyles: buildStyles(themeIdx), // Fix 3: build styles at creation
+		cachedStyles: buildStyles(themeIdx),
+		dirs:         loadBookmarks(),
 	}
-	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
+	if startMode == modeBrowser {
+		m = m.switchToBrowser()
+	}
+	p := tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	return result.(model).selected
+	return result.(appModel)
+}
+
+// ── launch claude ─────────────────────────────────────────────────────────────
+
+func launchClaude(dir string) {
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "未找到 claude 命令，请先安装 Claude Code: https://docs.anthropic.com/en/docs/claude-code")
+		os.Exit(1)
+	}
+	cmd := exec.Command(claudePath)
+	cmd.Dir = dir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -383,42 +703,41 @@ func runPicker(dirs []string) string {
 func main() {
 	args := os.Args[1:]
 
+	binName := filepath.Base(os.Args[0])
+	wantClaude := binName == "gtc"
+
 	if len(args) == 0 {
-		dirs := loadBookmarks()
-		selected := runPicker(dirs)
-		if selected != "" {
-			if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
-				fmt.Fprint(tty, "\033[2J\033[H")
-				tty.Close()
+		result := runApp(modePicker)
+		if result.selected != "" {
+			fmt.Println(result.selected)
+			if wantClaude {
+				launchClaude(result.selected)
 			}
-			fmt.Println(selected)
 		}
 		return
 	}
 
 	switch args[0] {
 	case "--version", "-v":
-		fmt.Println("gtc v" + version)
+		fmt.Println(binName + " v" + version)
 		return
 
 	case "add":
-		var dir string
 		if len(args) >= 2 {
-			dir = args[1]
-		} else {
-			dir, _ = os.Getwd()
-		}
-		abs, _ := filepath.Abs(dir)
-		dirs := loadBookmarks()
-		for _, d := range dirs {
-			if d == abs {
-				fmt.Println("already exists:", abs)
-				return
+			abs, _ := filepath.Abs(args[1])
+			dirs := loadBookmarks()
+			for _, d := range dirs {
+				if d == abs {
+					fmt.Println("already exists:", abs)
+					return
+				}
 			}
+			dirs = append(dirs, abs)
+			saveBookmarks(dirs)
+			fmt.Println("added:", abs)
+		} else {
+			runApp(modeBrowser)
 		}
-		dirs = append(dirs, abs)
-		saveBookmarks(dirs)
-		fmt.Println("added:", abs)
 
 	case "list":
 		for _, d := range loadBookmarks() {
@@ -427,10 +746,11 @@ func main() {
 
 	default:
 		fmt.Println("usage:")
-		fmt.Println("  gtc              pick a bookmark")
-		fmt.Println("  gtc add          add current directory")
-		fmt.Println("  gtc add <path>   add given path")
-		fmt.Println("  gtc list         list all bookmarks")
-		fmt.Println("  gtc --version    print version")
+		fmt.Println("  gt               pick a bookmark → cd")
+		fmt.Println("  gtc              pick a bookmark → cd → launch claude")
+		fmt.Println("  gt add           add current directory")
+		fmt.Println("  gt add <path>    add given path")
+		fmt.Println("  gt list          list all bookmarks")
+		fmt.Println("  gt --version     print version")
 	}
 }

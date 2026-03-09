@@ -39,4 +39,4 @@ git -C "$ROOT" push origin main
 git -C "$ROOT" push origin "v${NEW}"
 
 echo "\n✅ v${NEW} 已发布！"
-echo "   查看进度: gh run list --repo aporicho/gtc"
+echo "   查看进度: gh run list --repo aporicho/gt"
