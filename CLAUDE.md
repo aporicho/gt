@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**gt** (Go To) is a single-file Go TUI utility for bookmarking directories. It uses Charmbracelet's Bubble Tea framework for the interactive terminal UI. Two commands share one binary:
+**gt** (Go To) is a Go TUI utility for bookmarking directories. It uses Charmbracelet's Bubble Tea framework for the interactive terminal UI. Two commands share one binary:
 - `gt`: pick a bookmark → cd
 - `gtc`: pick a bookmark → cd → launch `claude`
 
@@ -37,7 +37,21 @@ gt list         # 检查书签文件
 
 ## Architecture
 
-Everything lives in `main.go`. The Bubble Tea model (`appModel` struct) drives a single interactive picker.
+All files are in `package main`, split by responsibility:
+
+| File | Purpose |
+|---|---|
+| `main.go` | 入口 + CLI 分发 + `runApp` + `launchClaude` |
+| `config.go` | 配置目录路径 (`~/.config/gt/`) + `init()` |
+| `bookmarks.go` | 书签 CRUD (`loadBookmarks` / `saveBookmarks`) |
+| `frecency.go` | frecency 数据结构 + 排序算法 |
+| `theme.go` | 主题定义 + 加载/保存主题偏好 |
+| `style.go` | lipgloss renderer + `themeStyles` 缓存 |
+| `model.go` | `appModel` 结构体 + `Update`/`View` 分发 + `visibleRows` |
+| `picker.go` | picker 模式 `updatePicker` + `viewPicker` |
+| `browser.go` | browser 模式 `updateBrowser` + `viewBrowser` + 目录浏览 helpers |
+
+The Bubble Tea model (`appModel` struct) drives two interactive modes: picker and browser.
 
 **路径传递机制**：Go 二进制将选中路径写入 `/tmp/gt_lastdir`，shell 包装函数（`__gt_cd`）读取后执行 `cd` 并删除该文件。选中时会清屏（`\033[H\033[2J`），取消时保留终端内容。
 

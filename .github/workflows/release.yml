@@ -37,7 +37,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           VERSION=$(cat VERSION)
-          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o gt-${{ matrix.goos }}-${{ matrix.goarch }} main.go
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o gt-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

@@ -10,7 +10,7 @@
 ## 安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aporicho/gt/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aporicho/gt/main/install.sh | sh
 ```
 
 支持平台：macOS (Apple Silicon / Intel)、Linux (x64 / ARM64)，无需 Go 环境。
@@ -27,6 +27,7 @@ gtc              选择书签目录，cd 后自动启动 claude
 gt add           交互式浏览并添加目录到书签
 gt add <路径>    添加指定目录到书签
 gt list          列出所有书签
+gt update        更新到最新版本
 gt --version     显示版本号
 ```
 
